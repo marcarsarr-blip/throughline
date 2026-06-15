@@ -1,0 +1,122 @@
+:root {
+  /* warm neutral foundation */
+  --paper: oklch(0.985 0.007 79);
+  --paper-2: oklch(0.965 0.009 79);
+  --surface: oklch(0.998 0.003 86);
+  --ink: oklch(0.255 0.012 64);
+  --ink-soft: oklch(0.44 0.013 64);
+  --ink-faint: oklch(0.61 0.012 64);
+  --line: oklch(0.9 0.008 78);
+  --line-soft: oklch(0.93 0.007 78);
+
+  /* accent — overridden by Tweaks (indigo default) */
+  --accent: oklch(0.62 0.13 264);
+  --accent-deep: oklch(0.5 0.12 264);
+  --accent-tint: oklch(0.955 0.028 264);
+  --accent-tint-2: oklch(0.9 0.05 264);
+  --accent-ink: oklch(0.4 0.1 264);
+
+  /* AI level spectrum (Assist → Augment → Automate → Autonomous) */
+  --lv-1: oklch(0.74 0.04 230);
+  --lv-2: oklch(0.7 0.09 200);
+  --lv-3: oklch(0.66 0.12 150);
+  --lv-4: oklch(0.62 0.15 130);
+  --lv-1-tint: oklch(0.95 0.02 230);
+  --lv-2-tint: oklch(0.95 0.03 200);
+  --lv-3-tint: oklch(0.95 0.04 150);
+  --lv-4-tint: oklch(0.95 0.05 130);
+
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow-sm: 0 1px 2px oklch(0.4 0.02 64 / 0.05), 0 2px 6px oklch(0.4 0.02 64 / 0.04);
+  --shadow-md: 0 2px 6px oklch(0.4 0.02 64 / 0.06), 0 10px 28px oklch(0.4 0.02 64 / 0.08);
+  --shadow-lg: 0 8px 24px oklch(0.4 0.02 64 / 0.1), 0 28px 64px oklch(0.4 0.02 64 / 0.12);
+
+  --serif: "Poppins", system-ui, sans-serif; /* titles + big display */
+  --sans: "Lato", system-ui, sans-serif; /* body */
+  --mono: "Bricolage Grotesque", system-ui, sans-serif; /* labels + little titles */
+
+  --maxw: 1120px;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+#root {
+  min-height: 100vh;
+}
+
+/* style variants set on <body data-style="..."> */
+body[data-style="soft"] {
+  --radius: 20px;
+  --radius-sm: 13px;
+}
+body[data-style="editorial"] {
+  --radius: 4px;
+  --radius-sm: 3px;
+  --shadow-md: 0 1px 0 var(--line);
+  --shadow-lg: 0 1px 0 var(--line);
+}
+
+::selection {
+  background: var(--accent-tint-2);
+}
+
+.fade-in {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .fade-in {
+    animation: fadeUp 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  }
+}
+/* transform-only so content is never hidden in static/background renders */
+@keyframes fadeUp {
+  from {
+    transform: translateY(9px);
+  }
+  to {
+    transform: none;
+  }
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+input,
+textarea,
+select {
+  font-family: inherit;
+}
+
+/* thin scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 20px;
+  border: 3px solid var(--paper);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

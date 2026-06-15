@@ -1,0 +1,23 @@
+# Netlify config — static Vite build + a serverless function that proxies Claude.
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[functions]
+  node_bundler = "esbuild"
+  # Bump the synchronous function timeout (default 10s). A full Opus analysis can
+  # take 15-25s. If your plan caps below this, switch the model to Sonnet (faster)
+  # in the Tweaks panel.
+  included_files = []
+
+# Friendly path: the client calls /api/analyze; Netlify routes it to the function.
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
+
+# `netlify dev` runs Vite + functions together and injects .env.
+[dev]
+  command = "npm run dev:vite"
+  targetPort = 5173
+  port = 8888
