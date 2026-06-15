@@ -107,7 +107,7 @@ export default function App() {
 
   return (
     <div ref={scrollRef} style={{ height: "100vh", overflowY: "auto" }}>
-      <AnalysisProvider analysis={analysis}>
+      <AnalysisProvider analysis={analysis} onChange={setAnalysis}>
         <Header stage={stage} maxReached={maxReached} go={go} setup={setup} analysis={analysis} />
 
         <main style={{ padding: "40px 32px 90px" }}>

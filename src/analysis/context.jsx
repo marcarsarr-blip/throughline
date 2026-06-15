@@ -1,16 +1,16 @@
-// context.jsx — holds the live analysis result and a derived role lookup so deep
-// components (RoleAvatar, etc.) can resolve role ids without prop-drilling.
+// context.jsx — holds the live analysis result, a derived role lookup, and a setter so
+// stages (e.g. Step 2) can edit/delete roles and jobs and have it persist everywhere.
 import { createContext, useContext, useMemo } from "react";
 
-const AnalysisContext = createContext({ analysis: null, roleById: {} });
+const AnalysisContext = createContext({ analysis: null, roleById: {}, setAnalysis: () => {} });
 
-export function AnalysisProvider({ analysis, children }) {
+export function AnalysisProvider({ analysis, onChange, children }) {
   const roleById = useMemo(
     () => Object.fromEntries((analysis?.roles || []).map((r) => [r.id, r])),
     [analysis],
   );
   return (
-    <AnalysisContext.Provider value={{ analysis, roleById }}>
+    <AnalysisContext.Provider value={{ analysis, roleById, setAnalysis: onChange || (() => {}) }}>
       {children}
     </AnalysisContext.Provider>
   );
