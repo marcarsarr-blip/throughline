@@ -70,7 +70,8 @@ The floating **Tweaks** button (bottom-right) switches:
 ## Notes
 
 - **No data is stored.** Everything is in memory for the session — no backend DB, no persistence. Reloading resets the app.
-- Export buttons show the intended action; actual Figma/PDF generation isn't wired.
+- **PDF export** is real: "Download PDF" opens a printable report of every stage → use the browser's **Save as PDF**.
+- **Figma export** is real via a plugin: "Send to Figma" copies the analysis JSON; the [Throughline Figma plugin](figma-plugin/README.md) turns it into editable frames. (Figma's REST API can't create content, so a plugin is the only way to generate editable frames.)
 - File upload reads text files (.txt/.md/.csv) client-side; for PDF/DOCX, paste the content into the Paste tab.
 
 ## Structure
@@ -86,6 +87,7 @@ src/
   stages/                    # the 8 stage screens (read from AnalysisContext)
   tweaks/TweaksPanel.jsx     # floating live-customization panel
   App.jsx                    # shell: stepper, state machine, analyze call, tweaks
-netlify/functions/analyze.mjs # serverless proxy — holds the key, calls Claude
+netlify/functions/          # analyze-background (Claude call) + analyze-status (poll)
 netlify.toml                 # build + /api/* redirect + dev config
+figma-plugin/               # Figma plugin: analysis JSON → editable frames
 ```

@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { font: 13px/1.5 Inter, -apple-system, system-ui, sans-serif; color: #2e2a22; margin: 0; padding: 16px; }
+      h1 { font-size: 14px; margin: 0 0 4px; }
+      p { margin: 0 0 12px; color: #6b6657; }
+      textarea { width: 100%; height: 220px; box-sizing: border-box; resize: vertical; border: 1px solid #ddd; border-radius: 8px; padding: 10px; font: 12px/1.4 ui-monospace, monospace; }
+      .row { display: flex; gap: 8px; margin-top: 10px; }
+      button { font: inherit; font-weight: 600; border-radius: 8px; padding: 9px 14px; cursor: pointer; border: 1px solid transparent; }
+      .primary { background: #6b5fc7; color: #fff; flex: 1; }
+      .ghost { background: #f3f1ec; color: #2e2a22; }
+      #status { margin-top: 10px; min-height: 18px; color: #6b6657; }
+      #status.err { color: #b3261e; }
+      #status.ok { color: #1f7a4d; }
+    </style>
+  </head>
+  <body>
+    <h1>Throughline → Figma</h1>
+    <p>Paste the analysis JSON you copied from the Throughline app, then generate editable frames.</p>
+    <textarea id="json" placeholder="Paste JSON here…"></textarea>
+    <div class="row">
+      <button class="ghost" id="paste">Paste from clipboard</button>
+      <button class="primary" id="go">Generate frames</button>
+    </div>
+    <div id="status"></div>
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const setStatus = (msg, cls) => { const s = $("status"); s.textContent = msg; s.className = cls || ""; };
+
+      $("paste").onclick = async () => {
+        try {
+          $("json").value = await navigator.clipboard.readText();
+          setStatus("Pasted from clipboard.", "ok");
+        } catch (e) {
+          setStatus("Couldn't read clipboard — paste manually (Ctrl/Cmd+V).", "err");
+        }
+      };
+
+      $("go").onclick = () => {
+        const json = $("json").value.trim();
+        if (!json) { setStatus("Paste the analysis JSON first.", "err"); return; }
+        setStatus("Generating…");
+        parent.postMessage({ pluginMessage: { type: "generate", json } }, "*");
+      };
+
+      onmessage = (e) => {
+        const m = e.data.pluginMessage;
+        if (!m) return;
+        if (m.type === "done") setStatus("Done — frames added to your canvas.", "ok");
+        if (m.type === "error") setStatus("Error: " + m.message, "err");
+      };
+    </script>
+  </body>
+</html>
