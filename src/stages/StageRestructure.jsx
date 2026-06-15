@@ -3,8 +3,12 @@ import { Eyebrow, RoleAvatar, StageHeader, NextBar } from "../components/primiti
 import { useAnalysis } from "../analysis/context.jsx";
 
 export function StageRestructure({ onNext }) {
-  const { analysis } = useAnalysis();
+  const { analysis, roleById } = useAnalysis();
   const RESTRUCTURE = analysis.restructure;
+  // "Today" is the live, edited team from Step 2 — not the model's original list.
+  const before = (analysis.roles || []).map((r) => ({ role: r.id, label: r.title, count: r.count }));
+  // "After" keeps new roles and any redesign whose source member still exists.
+  const after = (RESTRUCTURE.after || []).filter((a) => a.change === "new" || a.from === "new" || roleById[a.from]);
   const changeColor = { reshaped: "var(--lv-2)", focused: "var(--lv-3)", elevated: "var(--accent)", unchanged: "var(--ink-faint)", new: "var(--accent-deep)" };
   return (
     <div className="fade-in" style={{ maxWidth: 1000, margin: "0 auto" }}>
@@ -19,7 +23,7 @@ export function StageRestructure({ onNext }) {
         <div>
           <Eyebrow>Today</Eyebrow>
           <div style={{ display: "flex", flexDirection: "column", gap: 9, marginTop: 12 }}>
-            {RESTRUCTURE.before.map((b) => (
+            {before.map((b) => (
               <div key={b.role} style={{ display: "flex", alignItems: "center", gap: 11, padding: "13px 15px", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "var(--radius-sm)" }}>
                 <RoleAvatar role={b.role} size={30} />
                 <span style={{ flex: 1, fontWeight: 600, fontSize: 13.5 }}>{b.label}</span>
@@ -38,7 +42,7 @@ export function StageRestructure({ onNext }) {
         <div>
           <Eyebrow color="var(--accent)">After redesign</Eyebrow>
           <div style={{ display: "flex", flexDirection: "column", gap: 9, marginTop: 12 }}>
-            {RESTRUCTURE.after.map((a, i) => (
+            {after.map((a, i) => (
               <div key={i} style={{ padding: "13px 15px", background: a.change === "new" ? "var(--accent-tint)" : "var(--surface)", border: `1px solid ${a.change === "new" ? "var(--accent-tint-2)" : "var(--line)"}`, borderRadius: "var(--radius-sm)" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span style={{ width: 9, height: 9, borderRadius: 999, background: changeColor[a.change], flexShrink: 0 }} />
