@@ -1,8 +1,12 @@
 // netlify/functions/analyze.mjs
 // Server-side proxy: the Anthropic API key lives here as an env var (ANTHROPIC_API_KEY)
-// and never reaches the browser. Receives raw document text + setup, calls Claude with
-// structured outputs, and returns the full Throughline analysis as JSON. Stateless —
-// nothing is stored.
+// and never reaches the browser. Receives raw document text + setup, calls Claude, and
+// returns the full Throughline analysis as JSON. Stateless — nothing is stored.
+//
+// Note: we deliberately do NOT use strict structured outputs (output_config.format).
+// The full analysis schema is large enough that Anthropic's constrained-decoding grammar
+// exceeds its size limit ("compiled grammar is too large"). Instead we describe the exact
+// JSON shape in the system prompt and parse the response defensively.
 import Anthropic from "@anthropic-ai/sdk";
 
 const MODELS = {
@@ -12,172 +16,11 @@ const MODELS = {
 
 const MAX_INPUT_CHARS = 120_000;
 
-// JSON Schema for structured outputs. Shapes match what the React stages consume.
-const SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    team: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        name: { type: "string" },
-        sector: { type: "string" },
-        source: { type: "string", description: "Short description of the inputs analyzed, e.g. '4 job descriptions + 1 SOP'." },
-      },
-      required: ["name", "sector", "source"],
-    },
-    roles: {
-      type: "array",
-      description: "One entry per distinct role found in the input.",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          id: { type: "string", description: "Short stable slug, e.g. 'sdr'. Referenced elsewhere." },
-          title: { type: "string" },
-          count: { type: "integer", description: "Headcount in this role; 1 if unknown." },
-          initials: { type: "string", description: "1-3 uppercase letters." },
-          summary: { type: "string" },
-          jtbd: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                statement: { type: "string", description: "A 'When… I want… so I can…' jobs-to-be-done statement." },
-                confidence: { type: "string", enum: ["high", "med", "low"] },
-              },
-              required: ["statement", "confidence"],
-            },
-          },
-        },
-        required: ["id", "title", "count", "initials", "summary", "jtbd"],
-      },
-    },
-    mission: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        inferred: { type: "string", description: "One synthesized mission sentence." },
-        pillars: { type: "array", items: { type: "string" }, description: "Exactly 3 short pillars." },
-        note: { type: "string" },
-      },
-      required: ["inferred", "pillars", "note"],
-    },
-    activities: {
-      type: "array",
-      description: "The concrete activities the team performs, placed on the AI spectrum.",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          id: { type: "string", description: "Short slug, e.g. 'a1'." },
-          name: { type: "string" },
-          roles: { type: "array", items: { type: "string" }, description: "Role ids that perform this activity." },
-          current: { type: "string", enum: ["assist", "augment", "automate", "autonomous"] },
-          proposed: { type: "string", enum: ["assist", "augment", "automate", "autonomous"] },
-          rationale: { type: "string" },
-          outputs: { type: "array", items: { type: "string" } },
-          outcome: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              metric: { type: "string" },
-              value: { type: "string", description: "e.g. '−65%', '+40%', 'By design'." },
-            },
-            required: ["metric", "value"],
-          },
-          impacted: { type: "array", items: { type: "string" }, description: "Role ids impacted." },
-          confidence: { type: "string", enum: ["high", "med", "low"] },
-        },
-        required: ["id", "name", "roles", "current", "proposed", "rationale", "outputs", "outcome", "impacted", "confidence"],
-      },
-    },
-    restructure: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        headline: { type: "string" },
-        narrative: { type: "string" },
-        before: {
-          type: "array",
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              role: { type: "string", description: "A role id from roles[]." },
-              label: { type: "string" },
-              count: { type: "integer" },
-            },
-            required: ["role", "label", "count"],
-          },
-        },
-        after: {
-          type: "array",
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              label: { type: "string" },
-              count: { type: "integer" },
-              from: { type: "string", description: "Originating role id, or 'new' for a newly created role." },
-              change: { type: "string", enum: ["reshaped", "focused", "elevated", "unchanged", "new"] },
-              note: { type: "string" },
-            },
-            required: ["label", "count", "from", "change", "note"],
-          },
-        },
-      },
-      required: ["headline", "narrative", "before", "after"],
-    },
-    transition: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        phases: {
-          type: "array",
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              id: { type: "string" },
-              name: { type: "string", description: "Time horizon, e.g. 'Now → 90 days'." },
-              tag: { type: "string", description: "Short phase name, e.g. 'Foundations'." },
-              urgency: { type: "string", enum: ["immediate", "near", "future"] },
-              focus: { type: "string" },
-              moves: { type: "array", items: { type: "string" } },
-            },
-            required: ["id", "name", "tag", "urgency", "focus", "moves"],
-          },
-        },
-        skills: {
-          type: "array",
-          items: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              name: { type: "string" },
-              type: { type: "string", enum: ["technical", "human", "hybrid"] },
-              urgency: { type: "string", enum: ["immediate", "near", "future"] },
-              mode: { type: "string", enum: ["theory", "practice"] },
-              forRole: { type: "string", description: "'All', 'new', or a role id." },
-            },
-            required: ["name", "type", "urgency", "mode", "forRole"],
-          },
-        },
-      },
-      required: ["phases", "skills"],
-    },
-  },
-  required: ["team", "roles", "mission", "activities", "restructure", "transition"],
-};
-
 const SYSTEM = `You are the analysis engine behind Throughline, a workshop tool that helps SME leaders redesign how a team works with AI. You read a team's job descriptions and/or SOPs and produce a structured redesign that is a BASIS FOR DISCUSSION, not a decision.
 
 Ground everything in the documents you are given. Do not assume the team is a sales team or any other default — infer the real domain from the input. If the input is thin, infer reasonably and lower the confidence fields accordingly.
 
-Produce, in order:
+Produce:
 1. roles — every distinct role in the input, each with its real jobs-to-be-done written as "When… I want… so I can…" statements.
 2. mission — one synthesized mission sentence + exactly 3 pillars + a short note on where the team's center of gravity sits.
 3. activities — the concrete activities the team performs. Place each on the AI spectrum:
@@ -185,11 +28,22 @@ Produce, in order:
    - augment: AI accelerates each step; human leads and owns the outcome
    - automate: AI performs the task end-to-end; human reviews
    - autonomous: AI executes and self-corrects within guardrails; human sets policy
-   "current" is where it is today (anchor to the team's stated current AI maturity). "proposed" is where AI should take it given the team's expected direction. Keep relationship- and judgment-heavy work human-led (proposed === current) on purpose. Give each a rationale, concrete expected outputs, one headline outcome (metric + value like "−65%", "+40%", or "By design" for human-led), the impacted roles, and a confidence.
-4. restructure — before/after team shape. Do not eliminate roles; reshape them and add at most one new AI-orchestration role. Reference role ids consistently.
+   "current" anchors to the team's stated current AI maturity. "proposed" is where AI should take it given the team's expected direction. Keep relationship- and judgment-heavy work human-led (proposed === current) on purpose. Give each a rationale, concrete expected outputs, one headline outcome (metric + value like "−65%", "+40%", or "By design" for human-led), the impacted roles, and a confidence.
+4. restructure — before/after team shape. Do not eliminate roles; reshape them and add at most one new AI-orchestration role.
 5. transition — a 3-phase roadmap (immediate / near / future) plus the theoretical and practical skills each role must acquire, sequenced by urgency.
 
-CRITICAL: role ids must be consistent everywhere. Every id used in activities.roles, activities.impacted, restructure.before[].role, restructure.after[].from (unless "new"), and transition.skills[].forRole (unless "All"/"new") must exist in roles[].id. Be concrete and concise.`;
+Role ids must be consistent everywhere: every id in activities.roles, activities.impacted, restructure.before[].role, restructure.after[].from (unless "new"), and transition.skills[].forRole (unless "All"/"new") must exist in roles[].id.
+
+OUTPUT FORMAT — return ONLY a single minified JSON object, no markdown fences, no commentary before or after. Use exactly these keys and these enum values:
+
+{
+  "team": { "name": string, "sector": string, "source": string },
+  "roles": [ { "id": string (short slug), "title": string, "count": integer, "initials": string (1-3 uppercase letters), "summary": string, "jtbd": [ { "statement": string, "confidence": "high"|"med"|"low" } ] } ],
+  "mission": { "inferred": string, "pillars": [string, string, string], "note": string },
+  "activities": [ { "id": string, "name": string, "roles": [role id], "current": "assist"|"augment"|"automate"|"autonomous", "proposed": "assist"|"augment"|"automate"|"autonomous", "rationale": string, "outputs": [string], "outcome": { "metric": string, "value": string }, "impacted": [role id], "confidence": "high"|"med"|"low" } ],
+  "restructure": { "headline": string, "narrative": string, "before": [ { "role": role id, "label": string, "count": integer } ], "after": [ { "label": string, "count": integer, "from": role id|"new", "change": "reshaped"|"focused"|"elevated"|"unchanged"|"new", "note": string } ] },
+  "transition": { "phases": [ { "id": string, "name": string, "tag": string, "urgency": "immediate"|"near"|"future", "focus": string, "moves": [string] } ], "skills": [ { "name": string, "type": "technical"|"human"|"hybrid", "urgency": "immediate"|"near"|"future", "mode": "theory"|"practice", "forRole": "All"|"new"|role id } ] }
+}`;
 
 function json(statusCode, body) {
   return {
@@ -197,6 +51,19 @@ function json(statusCode, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   };
+}
+
+// Defensive JSON extraction — handles accidental markdown fences or stray prose.
+function extractJson(text) {
+  let t = (text || "").trim();
+  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) t = fence[1].trim();
+  if (!t.startsWith("{")) {
+    const i = t.indexOf("{");
+    const j = t.lastIndexOf("}");
+    if (i >= 0 && j > i) t = t.slice(i, j + 1);
+  }
+  return JSON.parse(t);
 }
 
 export const handler = async (event) => {
@@ -235,7 +102,7 @@ export const handler = async (event) => {
     "---",
     text.slice(0, MAX_INPUT_CHARS),
     "---",
-    "Analyze this team and return the structured redesign.",
+    "Analyze this team and return the structured redesign as a single JSON object.",
   ]
     .filter((l) => l !== false && l !== undefined && l !== null)
     .join("\n");
@@ -247,10 +114,7 @@ export const handler = async (event) => {
       model,
       max_tokens: 16000,
       thinking: { type: "adaptive" },
-      output_config: {
-        effort: "medium",
-        format: { type: "json_schema", schema: SCHEMA },
-      },
+      output_config: { effort: "medium" },
       system: SYSTEM,
       messages: [{ role: "user", content: userContent }],
     });
@@ -262,7 +126,12 @@ export const handler = async (event) => {
     if (!block) {
       return json(502, { error: "No analysis was returned. Try again." });
     }
-    const analysis = JSON.parse(block.text);
+    let analysis;
+    try {
+      analysis = extractJson(block.text);
+    } catch {
+      return json(502, { error: "The analysis came back malformed. Try again, or switch model in Tweaks." });
+    }
     return json(200, { analysis, model });
   } catch (err) {
     const status = err?.status || 500;
