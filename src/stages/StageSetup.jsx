@@ -150,7 +150,7 @@ export function StageSetup({ state, set, onAnalyze }) {
           </div>
         )}
         <Button size="lg" onClick={analyze} disabled={analyzing || !hasText}>
-          {analyzing ? <Spinner label="Reading the work with Claude…" /> : <>Analyze the team <Arrow /></>}
+          {analyzing ? <Spinner label="Analyzing with Claude — this can take up to a minute…" /> : <>Analyze the team <Arrow /></>}
         </Button>
         {!hasText && !analyzing && (
           <div style={{ fontSize: 12.5, color: "var(--ink-faint)" }}>Paste or upload at least a short document to begin.</div>

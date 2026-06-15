@@ -1,13 +1,13 @@
-// netlify/functions/analyze.mjs
-// Server-side proxy: the Anthropic API key lives here as an env var (ANTHROPIC_API_KEY)
-// and never reaches the browser. Receives raw document text + setup, calls Claude, and
-// returns the full Throughline analysis as JSON. Stateless — nothing is stored.
-//
-// Note: we deliberately do NOT use strict structured outputs (output_config.format).
-// The full analysis schema is large enough that Anthropic's constrained-decoding grammar
-// exceeds its size limit ("compiled grammar is too large"). Instead we describe the exact
-// JSON shape in the system prompt and parse the response defensively.
+// netlify/functions/analyze-background.mjs
+// Background function (up to 15 min) — avoids the ~10s synchronous timeout that an LLM
+// analysis would blow past. Returns 202 immediately; the real work runs after, and the
+// result is written to a Netlify Blobs store keyed by jobId. The client polls
+// analyze-status to retrieve it. The API key stays server-side; the blob is transient
+// (deleted on read by the status function).
 import Anthropic from "@anthropic-ai/sdk";
+import { getStore } from "@netlify/blobs";
+
+export const config = { background: true };
 
 const MODELS = {
   opus: "claude-opus-4-8",
@@ -45,14 +45,6 @@ OUTPUT FORMAT — return ONLY a single minified JSON object, no markdown fences,
   "transition": { "phases": [ { "id": string, "name": string, "tag": string, "urgency": "immediate"|"near"|"future", "focus": string, "moves": [string] } ], "skills": [ { "name": string, "type": "technical"|"human"|"hybrid", "urgency": "immediate"|"near"|"future", "mode": "theory"|"practice", "forRole": "All"|"new"|role id } ] }
 }`;
 
-function json(statusCode, body) {
-  return {
-    statusCode,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  };
-}
-
 // Defensive JSON extraction — handles accidental markdown fences or stray prose.
 function extractJson(text) {
   let t = (text || "").trim();
@@ -66,50 +58,48 @@ function extractJson(text) {
   return JSON.parse(t);
 }
 
-export const handler = async (event) => {
-  if (event.httpMethod !== "POST") {
-    return json(405, { error: "Method not allowed" });
-  }
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return json(500, { error: "Server is missing ANTHROPIC_API_KEY. Set it in your Netlify environment (or local .env)." });
-  }
-
-  let payload;
+export default async (req) => {
+  const store = getStore("analyses");
+  let jobId;
   try {
-    payload = JSON.parse(event.body || "{}");
-  } catch {
-    return json(400, { error: "Invalid JSON body." });
-  }
+    const payload = await req.json();
+    jobId = payload.jobId;
+    if (!jobId) return new Response("missing jobId", { status: 400 });
 
-  const text = (payload.text || "").trim();
-  if (text.length < 40) {
-    return json(400, { error: "Paste at least a short job description or SOP to analyze." });
-  }
-  const model = MODELS[payload.model] || MODELS.opus;
-  const teamName = (payload.teamName || "").trim();
-  const sector = (payload.sector || "").trim();
-  const currentMaturity = payload.currentMaturity || "unspecified";
-  const targetDirection = payload.targetDirection || "unspecified";
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      await store.setJSON(jobId, { status: "error", error: "Server is missing ANTHROPIC_API_KEY." });
+      return new Response(null, { status: 202 });
+    }
 
-  const userContent = [
-    teamName && `Team name: ${teamName}`,
-    sector && `Sector: ${sector}`,
-    `Current AI maturity (team's self-assessment): ${currentMaturity}`,
-    `Expected direction / ambition: ${targetDirection}`,
-    "",
-    "Documents (job descriptions and/or SOPs — infer which is which):",
-    "---",
-    text.slice(0, MAX_INPUT_CHARS),
-    "---",
-    "Analyze this team and return the structured redesign as a single JSON object.",
-  ]
-    .filter((l) => l !== false && l !== undefined && l !== null)
-    .join("\n");
+    const text = (payload.text || "").trim();
+    if (text.length < 40) {
+      await store.setJSON(jobId, { status: "error", error: "Paste at least a short job description or SOP." });
+      return new Response(null, { status: 202 });
+    }
 
-  const client = new Anthropic({ apiKey });
+    const model = MODELS[payload.model] || MODELS.opus;
+    const teamName = (payload.teamName || "").trim();
+    const sector = (payload.sector || "").trim();
+    const currentMaturity = payload.currentMaturity || "unspecified";
+    const targetDirection = payload.targetDirection || "unspecified";
 
-  try {
+    const userContent = [
+      teamName && `Team name: ${teamName}`,
+      sector && `Sector: ${sector}`,
+      `Current AI maturity (team's self-assessment): ${currentMaturity}`,
+      `Expected direction / ambition: ${targetDirection}`,
+      "",
+      "Documents (job descriptions and/or SOPs — infer which is which):",
+      "---",
+      text.slice(0, MAX_INPUT_CHARS),
+      "---",
+      "Analyze this team and return the structured redesign as a single JSON object.",
+    ]
+      .filter((l) => l !== false && l !== undefined && l !== null)
+      .join("\n");
+
+    const client = new Anthropic({ apiKey });
     const response = await client.messages.create({
       model,
       max_tokens: 16000,
@@ -120,27 +110,33 @@ export const handler = async (event) => {
     });
 
     if (response.stop_reason === "refusal") {
-      return json(422, { error: "The model declined to analyze this input." });
+      await store.setJSON(jobId, { status: "error", error: "The model declined to analyze this input." });
+      return new Response(null, { status: 202 });
     }
     const block = response.content.find((b) => b.type === "text");
     if (!block) {
-      return json(502, { error: "No analysis was returned. Try again." });
+      await store.setJSON(jobId, { status: "error", error: "No analysis was returned. Try again." });
+      return new Response(null, { status: 202 });
     }
     let analysis;
     try {
       analysis = extractJson(block.text);
     } catch {
-      return json(502, { error: "The analysis came back malformed. Try again, or switch model in Tweaks." });
+      await store.setJSON(jobId, { status: "error", error: "The analysis came back malformed. Try again, or switch model in Tweaks." });
+      return new Response(null, { status: 202 });
     }
-    return json(200, { analysis, model });
+    await store.setJSON(jobId, { status: "done", analysis, model });
   } catch (err) {
-    const status = err?.status || 500;
+    const status = err?.status;
     const message =
       status === 401
         ? "Anthropic rejected the API key (401). Check ANTHROPIC_API_KEY."
         : status === 429
           ? "Rate limited by Anthropic (429). Wait a moment and retry."
           : err?.message || "Analysis failed.";
-    return json(status >= 400 && status < 600 ? status : 500, { error: message });
+    if (jobId) {
+      try { await getStore("analyses").setJSON(jobId, { status: "error", error: message }); } catch { /* ignore */ }
+    }
   }
+  return new Response(null, { status: 202 });
 };
