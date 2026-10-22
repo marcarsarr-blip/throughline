@@ -58,6 +58,18 @@ function extractJson(text) {
   return JSON.parse(t);
 }
 
+// One-shot repair pass for near-valid JSON (unescaped quote, trailing comma, stray prose).
+async function repairJson(client, raw) {
+  const r = await client.messages.create({
+    model: MODELS.sonnet,
+    max_tokens: 16000,
+    system: "You repair malformed JSON. Return ONLY the corrected JSON object — no markdown fences, no commentary. Preserve every field and value; only fix syntax.",
+    messages: [{ role: "user", content: raw }],
+  });
+  const fixed = r.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+  return extractJson(fixed);
+}
+
 export default async (req) => {
   const store = getStore("analyses");
   let jobId;
@@ -100,29 +112,51 @@ export default async (req) => {
       .join("\n");
 
     const client = new Anthropic({ apiKey });
-    const response = await client.messages.create({
-      model,
-      max_tokens: 16000,
-      thinking: { type: "adaptive" },
-      output_config: { effort: "medium" },
-      system: SYSTEM,
-      messages: [{ role: "user", content: userContent }],
-    });
+    // Thinking tokens count against max_tokens, so leave generous headroom for the
+    // reasoning plus a large JSON answer. Stream to stay clear of HTTP timeouts.
+    const response = await client.messages
+      .stream({
+        model,
+        max_tokens: 32000,
+        thinking: { type: "adaptive" },
+        output_config: { effort: "medium" },
+        system: SYSTEM,
+        messages: [{ role: "user", content: userContent }],
+      })
+      .finalMessage();
+
+    console.log("analyze", { jobId, model, stop_reason: response.stop_reason, usage: response.usage });
 
     if (response.stop_reason === "refusal") {
       await store.setJSON(jobId, { status: "error", error: "The model declined to analyze this input." });
       return new Response(null, { status: 202 });
     }
-    const block = response.content.find((b) => b.type === "text");
-    if (!block) {
+    const raw = response.content.filter((b) => b.type === "text").map((b) => b.text).join("");
+    if (!raw.trim()) {
       await store.setJSON(jobId, { status: "error", error: "No analysis was returned. Try again." });
+      return new Response(null, { status: 202 });
+    }
+    if (response.stop_reason === "max_tokens") {
+      console.error("analyze truncated", { jobId, chars: raw.length, tail: raw.slice(-300) });
+      await store.setJSON(jobId, { status: "error", error: "The analysis was too long and got cut off. Try a shorter document, or switch to Sonnet in Tweaks." });
       return new Response(null, { status: 202 });
     }
     let analysis;
     try {
-      analysis = extractJson(block.text);
-    } catch {
-      await store.setJSON(jobId, { status: "error", error: "The analysis came back malformed. Try again, or switch model in Tweaks." });
+      analysis = extractJson(raw);
+    } catch (parseErr) {
+      console.error("analyze parse failed — attempting repair", { jobId, chars: raw.length, err: parseErr?.message, head: raw.slice(0, 200), tail: raw.slice(-300) });
+      try {
+        analysis = await repairJson(client, raw);
+      } catch (repairErr) {
+        console.error("analyze repair failed", { jobId, err: repairErr?.message });
+        await store.setJSON(jobId, { status: "error", error: "The analysis came back malformed. Try again, or switch model in Tweaks." });
+        return new Response(null, { status: 202 });
+      }
+    }
+    if (!analysis || !Array.isArray(analysis.roles) || !Array.isArray(analysis.activities)) {
+      console.error("analyze missing sections", { jobId, keys: analysis && Object.keys(analysis) });
+      await store.setJSON(jobId, { status: "error", error: "The analysis was incomplete. Try again." });
       return new Response(null, { status: 202 });
     }
     await store.setJSON(jobId, { status: "done", analysis, model });
